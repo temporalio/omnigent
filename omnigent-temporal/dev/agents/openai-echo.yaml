@@ -1,0 +1,11 @@
+name: openai-echo
+description: >-
+  Smallest OpenAI-backed agent, for exercising the Temporal executor. It uses the
+  openai-agents harness, which reads an ambient OPENAI_API_KEY, and it is not a
+  native harness, so the runner-recovery path is reachable with it.
+
+executor:
+  harness: openai-agents
+
+prompt: |
+  You are a terse assistant. Do exactly what the user asks and nothing more.

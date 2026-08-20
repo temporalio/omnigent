@@ -61,12 +61,38 @@ All three are small, and all three are what a driver with no runner of its own n
 
 ## Running it
 
+`dev/` has scripts for the whole thing. They use their own ports and their own database under `/tmp/omnigent-temporal-dev`, so they cannot disturb an Omnigent or Temporal you already run.
+
 ```
-uv venv --python 3.12 && uv pip install temporalio -e ../sdks/python-client -e .
-omnigent server --host 127.0.0.1 --port 8791          # in one shell
-omnigent host --server http://127.0.0.1:8791          # in another: provides the runner
-python -m omnigent_temporal.worker                    # in a third
-python -m omnigent_temporal submit my-key "Reply with the single word FOXTROT."
+dev/setup.sh                       # once: builds the venv
+export OPENAI_API_KEY=sk-...       # the agent needs it to answer
+```
+
+Then three shells, left running:
+
+```
+dev/temporal.sh                    # Temporal on 127.0.0.1:7255, UI on 8255
+dev/omnigent.sh                    # the Omnigent server on :8797, plus a host
+dev/worker.sh                      # the durable executor
+```
+
+The host is not optional. The server holds sessions; the host is what launches a runner for each one, and without it every turn fails with `runner_failed_to_start`.
+
+Then ask it something:
+
+```
+dev/ask.sh "Reply with the single word FOXTROT."
+dev/ask.sh my-session "and what did you just say?"    # same session twice
+dev/stop.sh                                           # stop everything
+```
+
+The default agent is `dev/agents/openai-echo.yaml` on the `openai-agents` harness, which reads an ambient `OPENAI_API_KEY`. It is deliberately not a native harness: the runner-recovery path below is only reachable off the native path, because a native harness leaves the turn to the vendor CLI.
+
+Under the scripts it is just:
+
+```
+python -m omnigent_temporal.worker
+python -m omnigent_temporal submit my-key "..."
 python -m omnigent_temporal state my-key
 python -m omnigent_temporal interrupt my-key
 ```
@@ -83,7 +109,14 @@ Note: the repo's `uv.toml` uses a duration syntax older uv builds cannot parse, 
 
 `loop_check.py` runs the workflow against a real Temporal server with the turn activity stubbed, so it needs no Omnigent server and no model key: one activity per prompt, the session id carried into the second turn, an interrupt that reaches the server and still lets the session serve a later prompt.
 
-Two crash tests, for the two things that can die.
+Two crash tests, for the two things that can die. Both are scripted, and both need the three shells above:
+
+```
+dev/crash-worker.sh                # kills the worker mid-turn
+dev/crash-runner.sh                # kills the runner mid-turn
+```
+
+`crash-runner.sh` reads better with a faster threshold, which the worker picks up at startup: `OMNIGENT_RECOVER_AFTER_SECONDS=25 dev/worker.sh`.
 
 **The worker dies.** Submit a turn whose shell command sleeps, wait until the marked prompt is in the item log with no answer, `pkill -9 -f omnigent_temporal.worker`, wait past the heartbeat timeout, start a fresh worker. The observed run went from (1 marked prompt, no answer) to (1 marked prompt, answered GOLF), with the activity completing on attempt 2. The turn itself was never in danger: it ran on the server throughout.
 

@@ -425,6 +425,7 @@ class SessionsNamespace:
         labels: dict[str, str] | None = None,
         reasoning_effort: str | None = None,
         workspace: str | None = None,
+        host_id: str | None = None,
     ) -> Session:
         """
         Create a new session bound to an already-registered agent.
@@ -445,6 +446,13 @@ class SessionsNamespace:
             effort, e.g. ``"high"``. ``None`` uses the agent default.
         :param workspace: Optional absolute starting cwd to record on
             the session, e.g. ``"/Users/corey/projects/myapp"``.
+            Required when *host_id* is set.
+        :param host_id: Optional host to launch the runner on, e.g.
+            ``"c8fdef8041ba4dd0"``, as listed by ``GET /v1/hosts``.
+            ``None`` leaves the session for a caller-managed runner,
+            which is what a client that runs its own runner wants. A
+            headless client with no runner of its own needs a host, or
+            the first turn fails with ``runner_failed_to_start``.
         :returns: The newly created :class:`Session` snapshot.
         :raises OmnigentError: If the server returns a non-2xx
             status.
@@ -458,6 +466,8 @@ class SessionsNamespace:
             body["reasoning_effort"] = reasoning_effort
         if workspace is not None:
             body["workspace"] = workspace
+        if host_id is not None:
+            body["host_id"] = host_id
         resp = await self._http.post(f"{self._base}/v1/sessions", json=body)
         raise_for_status(resp.status_code, response_body(resp))
         created = require_json_object(resp, "POST /v1/sessions")
@@ -575,6 +585,40 @@ class SessionsNamespace:
             if wanted & names:
                 return runner_id
         return unknown_harness
+
+    async def resolve_online_host(self, *, harness: str | None = None) -> str | None:
+        """Find an online host that can launch a runner for *harness*.
+
+        The counterpart to :meth:`resolve_online_runner` for the other
+        topology: a client with no runner of its own asks the server which
+        machine can start one. ``GET /v1/hosts`` reports each host's status and
+        the harnesses it has configured, so a headless driver can pick one
+        rather than guessing.
+
+        :param harness: Harness the session needs, e.g. ``"claude-native"``.
+            ``None`` accepts any online host.
+        :returns: A matching host id, or ``None`` when no online host offers
+            *harness*.
+        :raises OmnigentError: If the listing returns a non-2xx status.
+        """
+        resp = await self._http.get(f"{self._base}/v1/hosts")
+        raise_for_status(resp.status_code, response_body(resp))
+        listing = require_json_object(resp, "GET /v1/hosts")
+        hosts = listing.get("hosts", [])
+        for host in hosts if isinstance(hosts, list) else []:
+            if not isinstance(host, dict) or host.get("status") != "online":
+                continue
+            host_id = host.get("host_id")
+            if not isinstance(host_id, str) or not host_id:
+                continue
+            if harness is None:
+                return host_id
+            configured = host.get("configured_harnesses")
+            # A harness maps to True when it is ready; anything else is a
+            # reason it is not (False, "needs-auth", "version-too-low").
+            if isinstance(configured, dict) and configured.get(harness) is True:
+                return host_id
+        return None
 
     async def list(
         self,

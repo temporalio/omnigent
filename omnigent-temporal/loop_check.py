@@ -13,10 +13,6 @@ import asyncio
 import os
 import uuid
 
-from temporalio import activity
-from temporalio.client import Client
-from temporalio.worker import Worker
-
 from omnigent_temporal.protocol import (
     INTERRUPT_SIGNAL,
     SESSION_STATE_QUERY,
@@ -29,6 +25,9 @@ from omnigent_temporal.protocol import (
     workflow_id,
 )
 from omnigent_temporal.workflow import OmnigentSession
+from temporalio import activity
+from temporalio.client import Client
+from temporalio.worker import Worker
 
 ADDRESS = os.environ.get("TEMPORAL_ADDRESS", "127.0.0.1:7233")
 TASK_QUEUE = f"omnigent-loop-check-{uuid.uuid4().hex[:8]}"
@@ -116,10 +115,18 @@ async def main() -> int:
         await wait_for("the hanging turn to start", lambda: hanging.prompt_id in seen)
         await handle.signal(INTERRUPT_SIGNAL)
         await wait_for("the server to be told to stop", lambda: interrupted_sessions != [])
-        check("the interrupt reached the server", interrupted_sessions == ["conv_stub"], interrupted_sessions)
+        check(
+            "the interrupt reached the server",
+            interrupted_sessions == ["conv_stub"],
+            interrupted_sessions,
+        )
 
         state = await handle.query(SESSION_STATE_QUERY, result_type=SessionState)
-        check("the interrupt was recorded as the outcome", state.finished.outcome == "interrupted", state.finished)
+        check(
+            "the interrupt was recorded as the outcome",
+            state.finished.outcome == "interrupted",
+            state.finished,
+        )
 
         # The session still serves a later prompt.
         after = PromptInput(prompt_id=str(uuid.uuid4()), text="three")
@@ -127,7 +134,11 @@ async def main() -> int:
         await wait_for("a later prompt", lambda: after.prompt_id in seen)
         await asyncio.sleep(1.0)
         state = await handle.query(SESSION_STATE_QUERY, result_type=SessionState)
-        check("the session survived the interrupt", state.finished.outcome == "answered", state.finished)
+        check(
+            "the session survived the interrupt",
+            state.finished.outcome == "answered",
+            state.finished,
+        )
 
         await handle.terminate("loop check done")
 

@@ -1,8 +1,8 @@
 """Small CLI: submit a prompt, read state, interrupt.
 
-    python -m omnigent_temporal submit <key> "<text>"
-    python -m omnigent_temporal state <key>
-    python -m omnigent_temporal interrupt <key>
+python -m omnigent_temporal submit <key> "<text>"
+python -m omnigent_temporal state <key>
+python -m omnigent_temporal interrupt <key>
 """
 
 from __future__ import annotations

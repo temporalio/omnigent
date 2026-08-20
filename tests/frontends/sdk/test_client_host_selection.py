@@ -74,10 +74,22 @@ async def test_create_from_agent_id_omits_host_id_when_absent() -> None:
 async def test_resolve_online_host_picks_a_host_with_the_harness_configured() -> None:
     listing = {
         "hosts": [
-            {"host_id": "offline", "status": "offline", "configured_harnesses": {"claude-native": True}},
+            {
+                "host_id": "offline",
+                "status": "offline",
+                "configured_harnesses": {"claude-native": True},
+            },
             # Configured but not ready reads as a reason, not as True.
-            {"host_id": "needs-auth", "status": "online", "configured_harnesses": {"claude-native": "needs-auth"}},
-            {"host_id": "ready", "status": "online", "configured_harnesses": {"claude-native": True}},
+            {
+                "host_id": "needs-auth",
+                "status": "online",
+                "configured_harnesses": {"claude-native": "needs-auth"},
+            },
+            {
+                "host_id": "ready",
+                "status": "online",
+                "configured_harnesses": {"claude-native": True},
+            },
         ]
     }
 

@@ -10,6 +10,7 @@ also why the durability boundary sits at the server rather than at this process.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 
 from omnigent_client import OmnigentClient
@@ -21,6 +22,7 @@ from .protocol import RunTurnInput, RunTurnResult
 _logger = logging.getLogger(__name__)
 
 _POLL_SECONDS = 2.0
+
 
 # The prompt carries a zero-width marker with its prompt id, so a re-driven
 # activity can tell whether this exact prompt already reached the server. It also
@@ -49,10 +51,8 @@ def beat(details: object) -> None:
     The polling helpers are exercised directly in tests, where there is no
     activity context to report to.
     """
-    try:
+    with contextlib.suppress(RuntimeError):
         activity.heartbeat(details)
-    except RuntimeError:
-        pass
 
 
 class _PromptState:
@@ -216,25 +216,21 @@ async def _await_answer(
             since_progress = 0.0
             try:
                 ack = await client.sessions.retry_session(session_id)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 if failed:
                     raise RuntimeError(
                         f"omnigent session {session_id} failed and could not be recovered: {exc}"
                     ) from exc
                 _logger.warning("recovery for %s was refused: %s", session_id, exc)
             else:
-                _logger.info(
-                    "asked %s to recover: %s", session_id, ack.get("recovery")
-                )
+                _logger.info("asked %s to recover: %s", session_id, ack.get("recovery"))
 
         await asyncio.sleep(_POLL_SECONDS)
         waited += _POLL_SECONDS
         since_progress += _POLL_SECONDS
         since_recovery += _POLL_SECONDS
 
-    raise TimeoutError(
-        f"turn on {session_id} produced no answer in {cfg.turn_timeout_seconds}s"
-    )
+    raise TimeoutError(f"turn on {session_id} produced no answer in {cfg.turn_timeout_seconds}s")
 
 
 async def _settle_subtree(

@@ -6,12 +6,9 @@ shapes are the ones the server would see.
 
 from __future__ import annotations
 
-import json
-
 import httpx
 import pytest
 from omnigent_client import OmnigentClient
-
 from omnigent_temporal.activities import _PromptState, _settle_subtree
 from omnigent_temporal.config import Config
 
@@ -20,19 +17,19 @@ SESSION = "conv_abc123"
 
 
 def _config(**overrides: object) -> Config:
-    base = dict(
-        address="127.0.0.1:7233",
-        namespace="default",
-        task_queue="q",
-        server_url="http://example.invalid",
-        agent="echo",
-        workspace="/tmp",
-        idle_timeout_seconds=300,
-        turn_timeout_seconds=1800,
-        recover_after_seconds=60,
-        await_subtree=True,
-        subtree_timeout_seconds=10,
-    )
+    base = {
+        "address": "127.0.0.1:7233",
+        "namespace": "default",
+        "task_queue": "q",
+        "server_url": "http://example.invalid",
+        "agent": "echo",
+        "workspace": "/tmp",
+        "idle_timeout_seconds": 300,
+        "turn_timeout_seconds": 1800,
+        "recover_after_seconds": 60,
+        "await_subtree": True,
+        "subtree_timeout_seconds": 10,
+    }
     base.update(overrides)
     return Config(**base)  # type: ignore[arg-type]
 
@@ -40,8 +37,16 @@ def _config(**overrides: object) -> Config:
 def _items(answer: str) -> dict[str, object]:
     return {
         "data": [
-            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": f"go{MARKER}"}]},
-            {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": answer}]},
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": f"go{MARKER}"}],
+            },
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": answer}],
+            },
         ]
     }
 
@@ -62,7 +67,9 @@ async def test_answer_waits_for_a_busy_child_and_takes_the_later_answer() -> Non
         if request.url.path.endswith("/child_sessions"):
             busy_checks["n"] += 1
             busy = busy_checks["n"] <= 2
-            return httpx.Response(200, json={"data": [{"id": "child", "busy": busy}] if busy else []})
+            return httpx.Response(
+                200, json={"data": [{"id": "child", "busy": busy}] if busy else []}
+            )
         if request.url.path.endswith("/items"):
             # The parent speaks again once the child reports back.
             answer = "partial" if busy_checks["n"] <= 2 else "final"
@@ -130,7 +137,7 @@ async def test_a_wedged_child_does_not_hold_the_turn_open_forever() -> None:
 
 @pytest.mark.asyncio
 async def test_opting_out_skips_the_walk_entirely() -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(_request: httpx.Request) -> httpx.Response:
         raise AssertionError("no request should be made")
 
     client, transport = _client(handler)

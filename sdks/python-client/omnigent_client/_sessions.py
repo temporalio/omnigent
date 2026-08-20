@@ -59,6 +59,7 @@ _log = logging.getLogger("omnigent_client.sessions")
 # kept as a module-level constant so :meth:`SessionsNamespace.interrupt`
 # matches a single named symbol rather than an inline string.
 _INTERRUPT_TYPE: str = "interrupt"
+_RETRY_SESSION_TYPE: str = "retry_session"
 
 
 @dataclass(frozen=True)
@@ -1197,6 +1198,34 @@ class SessionsNamespace:
         await self.post_event(
             session_id,
             {"type": _INTERRUPT_TYPE, "data": {}},
+        )
+
+    async def retry_session(self, session_id: str) -> dict[str, Any]:
+        """Bring a session's runner back and let it pick up an interrupted turn.
+
+        Convenience wrapper over :meth:`post_event` that posts a
+        ``{"type": "retry_session", "data": {}}`` event. When the session's
+        runner is gone the server relaunches it through the host and initializes
+        the session with recovery enabled, so a turn that stopped part way
+        through is driven to its end. It adds nothing to the transcript, so the
+        prompt is not asked a second time.
+
+        A healthy runner makes this a no-op (``recovery`` reads
+        ``"already_connected"``), which is what makes it safe to call whenever a
+        turn looks stalled: only a session that actually lost its runner is
+        touched.
+
+        :param session_id: Session/conversation identifier, e.g.
+            ``"conv_abc123"``.
+        :returns: The server ack, e.g. ``{"queued": False, "recovered": True,
+            "recovery": "runner_relaunched"}``.
+        :raises OmnigentError: If the server returns a non-2xx status (404 when
+            the session does not exist, or a runner-unavailable error when no
+            host can start one).
+        """
+        return await self.post_event(
+            session_id,
+            {"type": _RETRY_SESSION_TYPE, "data": {}},
         )
 
     async def stream(

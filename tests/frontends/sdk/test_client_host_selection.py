@@ -93,3 +93,25 @@ async def test_resolve_online_host_picks_a_host_with_the_harness_configured() ->
     finally:
         await client.close()
         await transport.aclose()
+
+
+@pytest.mark.asyncio
+async def test_retry_session_posts_the_recovery_event() -> None:
+    posted: list[tuple[str, dict[str, object]]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        posted.append((request.url.path, json.loads(request.content)))
+        return httpx.Response(
+            202, json={"queued": False, "recovered": True, "recovery": "runner_relaunched"}
+        )
+
+    client, transport = _client(handler)
+    try:
+        ack = await client.sessions.retry_session("conv_abc123")
+    finally:
+        await client.close()
+        await transport.aclose()
+
+    assert posted == [("/v1/sessions/conv_abc123/events", {"type": "retry_session", "data": {}})]
+    assert ack["recovered"] is True
+    assert ack["recovery"] == "runner_relaunched"

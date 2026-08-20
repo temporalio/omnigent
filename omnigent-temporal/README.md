@@ -27,9 +27,11 @@ So:
 
 - **Driver (this worker) dies:** the turn is unaffected. It runs on the server's runner and finishes. Temporal re-drives the activity, which re-attaches and reads the answer. Verified.
 - **Runner survives, server restarts:** the runner reconnects (it retries forever with backoff), the server re-inits each of its sessions, and recovery is a backstop. The turn finishes.
-- **Runner dies with the server, and nothing persistent replaces it:** nothing re-drives the interrupted turn. It sits abandoned until the next user message arrives, and that path suppresses recovery, so the new message drives the turn rather than the old one completing.
+- **Runner dies and stays dead:** nothing in Omnigent re-drives the interrupted turn. It sits abandoned until the next user message arrives, and that path suppresses recovery, so the new message drives its own turn rather than the old one completing.
 
-That last case is the real gap, and it is why a durable executor in front is worth having rather than trusting the server alone. Closing it properly means either guaranteeing a persistent runner, having Temporal re-drive the turn itself, or adding a server-startup reconcile. The third is a fork change we have not made.
+The executor closes that last case itself. A turn that stops producing items, or whose session goes `failed`, is asked to recover, and Omnigent already ships the mechanism: a `retry_session` event relaunches the runner through the host and initializes the session with recovery enabled, so the interrupted turn is driven to its end. It adds nothing to the transcript, so the prompt is not asked twice, and a healthy runner makes it a no-op (`already_connected`), which is what makes it safe to call on any stall.
+
+Recovery is only meaningful off the native path. For `claude-native` and friends the vendor CLI owns the turn, so relaunching gets the terminal back (`native_terminal_ready`) without resuming what was interrupted.
 
 ## Idempotency
 
@@ -51,8 +53,9 @@ The SDK could not create a session that runs on a registered host: `create_from_
 
 - `create_from_agent_id(..., host_id=...)` passes the host through.
 - `resolve_online_host(harness=...)` finds an online host that has the harness configured, the counterpart to the existing `resolve_online_runner` for the other topology.
+- `retry_session(session_id)` posts the `retry_session` event. The server already implemented it; the SDK just did not expose it.
 
-Both are small, and both are what a driver with no runner of its own needs.
+All three are small, and all three are what a driver with no runner of its own needs.
 
 ## Running it
 
@@ -66,7 +69,7 @@ python -m omnigent_temporal state my-key
 python -m omnigent_temporal interrupt my-key
 ```
 
-Env: `TEMPORAL_ADDRESS`, `TEMPORAL_NAMESPACE`, `OMNIGENT_TEMPORAL_TASK_QUEUE`, `OMNIGENT_SERVER_URL`, `OMNIGENT_AGENT`, `OMNIGENT_WORKSPACE`, `OMNIGENT_IDLE_TIMEOUT_SECONDS`, `OMNIGENT_TURN_TIMEOUT_SECONDS`.
+Env: `TEMPORAL_ADDRESS`, `TEMPORAL_NAMESPACE`, `OMNIGENT_TEMPORAL_TASK_QUEUE`, `OMNIGENT_SERVER_URL`, `OMNIGENT_AGENT`, `OMNIGENT_WORKSPACE`, `OMNIGENT_IDLE_TIMEOUT_SECONDS`, `OMNIGENT_TURN_TIMEOUT_SECONDS`, `OMNIGENT_RECOVER_AFTER_SECONDS`.
 
 `temporal workflow query --workflow-id omnigent-session-<key> --name sessionState` reports the queue, the session id, the turn in flight, and how the last turn ended.
 
@@ -76,7 +79,11 @@ Note: the repo's `uv.toml` uses a duration syntax older uv builds cannot parse, 
 
 `loop_check.py` runs the workflow against a real Temporal server with the turn activity stubbed, so it needs no Omnigent server and no model key: one activity per prompt, the session id carried into the second turn, an interrupt that reaches the server and still lets the session serve a later prompt.
 
-The crash test: submit a turn whose shell command sleeps, wait until the marked prompt is in the item log with no answer, `pkill -9 -f omnigent_temporal.worker`, wait past the heartbeat timeout, start a fresh worker. The observed run went from (1 marked prompt, no answer) to (1 marked prompt, answered GOLF) with the activity completing on attempt 2.
+Two crash tests, for the two things that can die.
+
+**The worker dies.** Submit a turn whose shell command sleeps, wait until the marked prompt is in the item log with no answer, `pkill -9 -f omnigent_temporal.worker`, wait past the heartbeat timeout, start a fresh worker. The observed run went from (1 marked prompt, no answer) to (1 marked prompt, answered GOLF), with the activity completing on attempt 2. The turn itself was never in danger: it ran on the server throughout.
+
+**The runner dies.** Submit a long turn against a non-native agent, then `pkill -9 -f omnigent.runner._zygote`. Nothing in Omnigent would finish that turn. The observed run recovered it: the worker logged `asked <session> to recover: runner_relaunched`, the answer came back complete (200 lines then JULIET), the item log held exactly one copy of the prompt, and the activity completed on **attempt 1** — the worker never restarted, so it was the turn that was recovered, not the driver.
 
 ## Layout
 
@@ -89,7 +96,8 @@ The crash test: submit a turn whose shell command sleeps, wait until the marked 
 
 ## Known gaps
 
-- **No step level.** A turn is the smallest durable unit. Omnigent exposes no "run one model call and its tools, then stop", so a crash re-drives from wherever the store left off. On the Pi fork we added stepping; here it would be a runner change.
-- **A server restart with no surviving runner abandons the turn.** See above. Temporal notices (the activity keeps waiting and eventually times out) but does not currently re-post the prompt, because re-posting is the one thing that would duplicate work.
+- **No step level, and not for the reason you would guess.** A turn is the smallest unit Omnigent can *drive*. It is not that the loop is expensive to split: Omnigent has no loop of its own to split. Every shipped executor reports `handles_tools_internally() == True`, so the model-call-then-tools loop always lives in the vendor SDK or the vendor CLI. Omnigent brokers turns; it never sits between "the model asked for a tool" and "the tool ran". A step is something it can observe, not something it can gate.
+
+  Two things soften that. Step boundaries are already persisted per item, so this executor can checkpoint *on* steps without any fork. And a stepwise protocol does exist in the tree, orphaned: `TurnComplete(continue_turn=True)` plus `max_turns=1` and an in-memory resume state in the openai-agents executor, with zero consumers repo-wide. Reviving it would buy step gating for one harness, with the resume state still in process memory, so a crash between steps would fall back to full-history replay anyway.
 - **Sub-agents are not tracked.** A parent turn that delegates reads answered when the parent answers. `subtree_busy` exists and would be the way to gate on descendant work.
 - **No orphan tool-call repair to rely on.** Omnigent does not synthesize a placeholder tool output: native harnesses leave it to the vendor CLI's own resume, and the SDK path drops tool items when rebuilding the prompt.

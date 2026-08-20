@@ -54,6 +54,10 @@ class _PromptState:
 
 async def _prompt_state(client: OmnigentClient, session_id: str, marker: str) -> _PromptState:
     items = await client.sessions.list_items(session_id, limit=1000, order="asc")
+    return _scan(items, marker)
+
+
+def _scan(items: list[dict], marker: str) -> _PromptState:
     recorded = False
     answered = False
     final_text = ""
@@ -134,7 +138,7 @@ def make_activities(cfg: Config):
 
             # Either we just submitted, or a previous attempt did and the server
             # is still working on it. Both end the same way: wait for the answer.
-            final_text = await _await_answer(client, session_id, marker, cfg.turn_timeout_seconds)
+            final_text = await _await_answer(client, session_id, marker, cfg)
             return RunTurnResult(session_id=session_id, final_text=final_text, ran=True)
 
     @activity.defn(name="interrupt_session")
@@ -154,27 +158,68 @@ async def _await_answer(
     client: OmnigentClient,
     session_id: str,
     marker: str,
-    timeout_seconds: int,
+    cfg: Config,
 ) -> str:
-    """Poll until the turn has an answer, the session fails, or we give up.
+    """Poll until the turn has an answer, or we give up on it.
 
-    Status alone is not enough: a session reads ``idle`` in the moment between
-    the prompt landing and the turn starting, and a parent reads ``idle`` while
-    its sub-agents still work. So the answer in the log is the signal, and status
-    is only used to notice failure.
+    Status alone is not the done-signal: a session reads ``idle`` in the moment
+    between the prompt landing and the turn starting, and a parent reads ``idle``
+    while its sub-agents still work. So the answer in the log is what we wait
+    for.
+
+    A turn that stopped making progress, or whose session went ``failed``, is
+    asked to recover. Omnigent re-drives an interrupted turn when a runner
+    connects, but nothing re-drives one whose runner died and stayed dead: the
+    server has no startup sweep, and a later message drives its own turn rather
+    than finishing this one. Asking here is what closes that gap, and it is cheap
+    when the runner is healthy because the server reports ``already_connected``
+    and does nothing.
     """
     waited = 0.0
-    while waited < timeout_seconds:
+    since_progress = 0.0
+    since_recovery = float(cfg.recover_after_seconds)
+    seen_items = -1
+
+    while waited < cfg.turn_timeout_seconds:
         activity.heartbeat(session_id)
-        state = await _prompt_state(client, session_id, marker)
+        items = await client.sessions.list_items(session_id, limit=1000, order="asc")
+        state = _scan(items, marker)
         if state.answered:
             return state.final_text
 
+        # Any new item is progress, so only a genuinely stuck turn is recovered.
+        if len(items) != seen_items:
+            seen_items = len(items)
+            since_progress = 0.0
+
         session = await client.sessions.get(session_id)
-        if session.status == "failed":
-            raise RuntimeError(f"omnigent session {session_id} failed")
+        failed = session.status == "failed"
+
+        # A failed session is not a reason to stop: losing the runner is exactly
+        # what recovery is for. Only give up when recovery itself cannot happen.
+        if (failed or since_progress >= cfg.recover_after_seconds) and (
+            since_recovery >= cfg.recover_after_seconds
+        ):
+            since_recovery = 0.0
+            since_progress = 0.0
+            try:
+                ack = await client.sessions.retry_session(session_id)
+            except Exception as exc:  # noqa: BLE001
+                if failed:
+                    raise RuntimeError(
+                        f"omnigent session {session_id} failed and could not be recovered: {exc}"
+                    ) from exc
+                _logger.warning("recovery for %s was refused: %s", session_id, exc)
+            else:
+                _logger.info(
+                    "asked %s to recover: %s", session_id, ack.get("recovery")
+                )
 
         await asyncio.sleep(_POLL_SECONDS)
         waited += _POLL_SECONDS
+        since_progress += _POLL_SECONDS
+        since_recovery += _POLL_SECONDS
 
-    raise TimeoutError(f"turn on {session_id} produced no answer in {timeout_seconds}s")
+    raise TimeoutError(
+        f"turn on {session_id} produced no answer in {cfg.turn_timeout_seconds}s"
+    )

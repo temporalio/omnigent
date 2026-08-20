@@ -25,6 +25,9 @@ class Config:
     idle_timeout_seconds: int
     # How long to wait for one turn to finish before giving up on it.
     turn_timeout_seconds: int
+    # How long a turn may show no progress before we ask the server to bring its
+    # runner back. A turn whose runner died is not re-driven by anything else.
+    recover_after_seconds: int
 
 
 def from_env() -> Config:
@@ -37,4 +40,5 @@ def from_env() -> Config:
         workspace=os.environ.get("OMNIGENT_WORKSPACE", os.getcwd()),
         idle_timeout_seconds=int(os.environ.get("OMNIGENT_IDLE_TIMEOUT_SECONDS", "300")),
         turn_timeout_seconds=int(os.environ.get("OMNIGENT_TURN_TIMEOUT_SECONDS", "1800")),
+        recover_after_seconds=int(os.environ.get("OMNIGENT_RECOVER_AFTER_SECONDS", "60")),
     )

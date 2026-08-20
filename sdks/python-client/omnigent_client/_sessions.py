@@ -59,6 +59,7 @@ _log = logging.getLogger("omnigent_client.sessions")
 # kept as a module-level constant so :meth:`SessionsNamespace.interrupt`
 # matches a single named symbol rather than an inline string.
 _INTERRUPT_TYPE: str = "interrupt"
+_RETRY_SESSION_TYPE: str = "retry_session"
 
 
 @dataclass(frozen=True)
@@ -425,6 +426,7 @@ class SessionsNamespace:
         labels: dict[str, str] | None = None,
         reasoning_effort: str | None = None,
         workspace: str | None = None,
+        host_id: str | None = None,
     ) -> Session:
         """
         Create a new session bound to an already-registered agent.
@@ -445,6 +447,13 @@ class SessionsNamespace:
             effort, e.g. ``"high"``. ``None`` uses the agent default.
         :param workspace: Optional absolute starting cwd to record on
             the session, e.g. ``"/Users/corey/projects/myapp"``.
+            Required when *host_id* is set.
+        :param host_id: Optional host to launch the runner on, e.g.
+            ``"c8fdef8041ba4dd0"``, as listed by ``GET /v1/hosts``.
+            ``None`` leaves the session for a caller-managed runner,
+            which is what a client that runs its own runner wants. A
+            headless client with no runner of its own needs a host, or
+            the first turn fails with ``runner_failed_to_start``.
         :returns: The newly created :class:`Session` snapshot.
         :raises OmnigentError: If the server returns a non-2xx
             status.
@@ -458,6 +467,8 @@ class SessionsNamespace:
             body["reasoning_effort"] = reasoning_effort
         if workspace is not None:
             body["workspace"] = workspace
+        if host_id is not None:
+            body["host_id"] = host_id
         resp = await self._http.post(f"{self._base}/v1/sessions", json=body)
         raise_for_status(resp.status_code, response_body(resp))
         created = require_json_object(resp, "POST /v1/sessions")
@@ -575,6 +586,40 @@ class SessionsNamespace:
             if wanted & names:
                 return runner_id
         return unknown_harness
+
+    async def resolve_online_host(self, *, harness: str | None = None) -> str | None:
+        """Find an online host that can launch a runner for *harness*.
+
+        The counterpart to :meth:`resolve_online_runner` for the other
+        topology: a client with no runner of its own asks the server which
+        machine can start one. ``GET /v1/hosts`` reports each host's status and
+        the harnesses it has configured, so a headless driver can pick one
+        rather than guessing.
+
+        :param harness: Harness the session needs, e.g. ``"claude-native"``.
+            ``None`` accepts any online host.
+        :returns: A matching host id, or ``None`` when no online host offers
+            *harness*.
+        :raises OmnigentError: If the listing returns a non-2xx status.
+        """
+        resp = await self._http.get(f"{self._base}/v1/hosts")
+        raise_for_status(resp.status_code, response_body(resp))
+        listing = require_json_object(resp, "GET /v1/hosts")
+        hosts = listing.get("hosts", [])
+        for host in hosts if isinstance(hosts, list) else []:
+            if not isinstance(host, dict) or host.get("status") != "online":
+                continue
+            host_id = host.get("host_id")
+            if not isinstance(host_id, str) or not host_id:
+                continue
+            if harness is None:
+                return host_id
+            configured = host.get("configured_harnesses")
+            # A harness maps to True when it is ready; anything else is a
+            # reason it is not (False, "needs-auth", "version-too-low").
+            if isinstance(configured, dict) and configured.get(harness) is True:
+                return host_id
+        return None
 
     async def list(
         self,
@@ -1153,6 +1198,34 @@ class SessionsNamespace:
         await self.post_event(
             session_id,
             {"type": _INTERRUPT_TYPE, "data": {}},
+        )
+
+    async def retry_session(self, session_id: str) -> dict[str, Any]:
+        """Bring a session's runner back and let it pick up an interrupted turn.
+
+        Convenience wrapper over :meth:`post_event` that posts a
+        ``{"type": "retry_session", "data": {}}`` event. When the session's
+        runner is gone the server relaunches it through the host and initializes
+        the session with recovery enabled, so a turn that stopped part way
+        through is driven to its end. It adds nothing to the transcript, so the
+        prompt is not asked a second time.
+
+        A healthy runner makes this a no-op (``recovery`` reads
+        ``"already_connected"``), which is what makes it safe to call whenever a
+        turn looks stalled: only a session that actually lost its runner is
+        touched.
+
+        :param session_id: Session/conversation identifier, e.g.
+            ``"conv_abc123"``.
+        :returns: The server ack, e.g. ``{"queued": False, "recovered": True,
+            "recovery": "runner_relaunched"}``.
+        :raises OmnigentError: If the server returns a non-2xx status (404 when
+            the session does not exist, or a runner-unavailable error when no
+            host can start one).
+        """
+        return await self.post_event(
+            session_id,
+            {"type": _RETRY_SESSION_TYPE, "data": {}},
         )
 
     async def stream(

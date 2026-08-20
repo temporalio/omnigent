@@ -7,6 +7,7 @@ command -v temporal >/dev/null || die "temporal CLI not found. brew install temp
 need_free_port "$TEMPORAL_PORT" "the Temporal server"
 mkdir -p "$DEV_STATE_DIR"
 
+record_pid temporal $$
 log "Temporal dev server on 127.0.0.1:$TEMPORAL_PORT (UI http://127.0.0.1:$TEMPORAL_UI_PORT)"
 exec temporal server start-dev \
   --port "$TEMPORAL_PORT" \

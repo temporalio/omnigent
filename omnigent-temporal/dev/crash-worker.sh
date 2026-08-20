@@ -10,13 +10,15 @@
 source "$(dirname "${BASH_SOURCE[0]}")/env.sh"
 need_venv
 
-pgrep -f "omnigent_temporal.worker" >/dev/null || die "no worker running. Start dev/worker.sh"
+WORKER_PID="$(pid_of worker)" || die "no worker recorded. Start dev/worker.sh"
 
 KEY="crash-worker-$(date +%s)"
 log "session '$KEY'"
 
-"$PY" - "$KEY" <<'PY'
-import asyncio, subprocess, sys, uuid
+# The worker pid, not a pattern: a pattern would also take out a worker someone
+# else on this machine is running.
+WORKER_PID="$WORKER_PID" "$PY" - "$KEY" <<'PY'
+import asyncio, os, signal, sys, uuid
 
 from omnigent_client import OmnigentClient
 from omnigent_temporal.activities import _marker, _prompt_state
@@ -55,8 +57,9 @@ async def main() -> int:
             print("it finished before we could interrupt; try a longer prompt", file=sys.stderr)
             return 1
 
-        print("killing the worker")
-        subprocess.run(["pkill", "-9", "-f", "omnigent_temporal.worker"], check=False)
+        worker_pid = int(os.environ["WORKER_PID"])
+        print(f"killing the worker (pid {worker_pid})")
+        os.kill(worker_pid, signal.SIGKILL)
         print("no worker is running now. Waiting on Omnigent's own log.")
 
         for _ in range(300):

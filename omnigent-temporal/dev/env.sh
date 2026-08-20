@@ -33,6 +33,44 @@ OMNIGENT="$VENV/bin/omnigent"
 
 export TEMPORAL_ADDRESS OMNIGENT_SERVER_URL OMNIGENT_AGENT OMNIGENT_WORKSPACE
 
+# Everything these scripts start records its pid here, so stopping is surgical.
+# A broad `pkill -f omnigent` also kills whatever else on the machine happens to
+# be running Omnigent, which is how two people (or two agents) sharing a box end
+# up killing each other's servers all afternoon.
+PIDS_DIR="$DEV_STATE_DIR/pids"
+
+record_pid() {
+  mkdir -p "$PIDS_DIR"
+  printf '%s\n' "$2" > "$PIDS_DIR/$1.pid"
+}
+
+pid_of() {
+  local f="$PIDS_DIR/$1.pid"
+  [ -f "$f" ] || return 1
+  local pid
+  pid="$(cat "$f" 2>/dev/null || true)"
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || return 1
+  printf '%s\n' "$pid"
+}
+
+stop_recorded() {
+  local name="$1" signal="${2:--TERM}" pid
+  if pid="$(pid_of "$name")"; then
+    kill "$signal" "$pid" 2>/dev/null || true
+  fi
+  rm -f "$PIDS_DIR/$name.pid"
+}
+
+# Every descendant of a pid, deepest last. Used to find the runner belonging to
+# our own host rather than any runner on the machine.
+descendants() {
+  local parent="$1" child
+  for child in $(pgrep -P "$parent" 2>/dev/null); do
+    printf '%s\n' "$child"
+    descendants "$child"
+  done
+}
+
 log() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31mError:\033[0m %s\n' "$*" >&2; exit 1; }
 

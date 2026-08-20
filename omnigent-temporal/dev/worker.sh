@@ -5,6 +5,7 @@ need_venv
 
 wait_for_http "$OMNIGENT_SERVER_URL/health" 5 || die "Omnigent is not up. Run dev/omnigent.sh first."
 
+record_pid worker $$
 log "worker against Temporal $TEMPORAL_ADDRESS and Omnigent $OMNIGENT_SERVER_URL"
 # -u so the log is not buffered when this is piped or captured.
 exec "$PY" -u -m omnigent_temporal.worker

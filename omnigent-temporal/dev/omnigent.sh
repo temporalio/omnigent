@@ -31,6 +31,7 @@ log "Omnigent server on $OMNIGENT_SERVER_URL (db + artifacts under $DEV_STATE_DI
   --artifact-location "$DEV_STATE_DIR/artifacts" \
   --agent "$AGENT_FILE" &
 SERVER_PID=$!
+record_pid server "$SERVER_PID"
 
 wait_for_http "$OMNIGENT_SERVER_URL/health" 90 || die "the server never came up; see ~/.omnigent/logs/server/"
 log "server is up"
@@ -38,6 +39,7 @@ log "server is up"
 log "registering this machine as a host (it launches the runners)"
 "$OMNIGENT" host --server "$OMNIGENT_SERVER_URL" --non-interactive &
 HOST_PID=$!
+record_pid host "$HOST_PID"
 
 log "ready. Agent '$OMNIGENT_AGENT' in $OMNIGENT_WORKSPACE. Ctrl-C to stop both."
 wait

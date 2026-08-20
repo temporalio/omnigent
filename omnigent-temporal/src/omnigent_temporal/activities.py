@@ -55,13 +55,27 @@ def beat(details: object) -> None:
         activity.heartbeat(details)
 
 
+# A session whose runner went away can be brought back; anything else the server
+# reports as an error is the turn itself failing, and no amount of relaunching
+# fixes it.
+_RECOVERABLE_ERRORS = frozenset({"runner_failed_to_start", "runner_disconnected"})
+
+
 class _PromptState:
     """What the item log says about one prompt."""
 
-    def __init__(self, recorded: bool, answered: bool, final_text: str) -> None:
+    def __init__(
+        self,
+        recorded: bool,
+        answered: bool,
+        final_text: str,
+        error: str | None = None,
+    ) -> None:
         self.recorded = recorded
         self.answered = answered
         self.final_text = final_text
+        # A terminal error recorded after this prompt, if any.
+        self.error = error
 
 
 async def _prompt_state(client: OmnigentClient, session_id: str, marker: str) -> _PromptState:
@@ -73,21 +87,34 @@ def _scan(items: list[dict], marker: str) -> _PromptState:
     recorded = False
     answered = False
     final_text = ""
+    error: str | None = None
     for item in items:
-        if item.get("type") != "message":
-            continue
-        role = item.get("role")
-        text = _text_of(item.get("content"))
+        kind = item.get("type")
         if not recorded:
-            if role == "user" and marker in text:
+            if (
+                kind == "message"
+                and item.get("role") == "user"
+                and marker in _text_of(item.get("content"))
+            ):
                 recorded = True
+            continue
+
+        if kind == "error" and item.get("code") not in _RECOVERABLE_ERRORS:
+            error = f"{item.get('code')}: {item.get('message')}"
+            continue
+
+        if kind != "message":
             continue
         # An assistant message that Omnigent itself flagged as interrupted is a
         # partial, so it is not an answer.
-        if role == "assistant" and not item.get("interrupted") and text.strip():
+        if (
+            item.get("role") == "assistant"
+            and not item.get("interrupted")
+            and _text_of(item.get("content")).strip()
+        ):
             answered = True
-            final_text = text
-    return _PromptState(recorded, answered, final_text)
+            final_text = _text_of(item.get("content"))
+    return _PromptState(recorded, answered, final_text, error)
 
 
 def _session_id_from_last_attempt() -> str | None:
@@ -198,6 +225,10 @@ async def _await_answer(
         state = _scan(items, marker)
         if state.answered:
             return await _settle_subtree(client, session_id, marker, cfg, state)
+        if state.error is not None:
+            # The turn itself failed. Relaunching the runner cannot fix that, so
+            # say what went wrong instead of retrying until the timeout.
+            raise RuntimeError(f"turn on {session_id} failed: {state.error}")
 
         # Any new item is progress, so only a genuinely stuck turn is recovered.
         if len(items) != seen_items:

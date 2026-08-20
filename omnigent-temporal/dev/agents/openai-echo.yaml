@@ -6,6 +6,11 @@ description: >-
 
 executor:
   harness: openai-agents
+  # A non-reasoning model on purpose. With a reasoning model this harness replays
+  # the transcript without the reasoning items its messages depend on, and the
+  # second turn of a session fails with an OpenAI 400: "Item 'msg_...' was
+  # provided without its required 'reasoning' item".
+  model: gpt-4o-mini
 
 prompt: |
   You are a terse assistant. Do exactly what the user asks and nothing more.

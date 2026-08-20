@@ -14,24 +14,40 @@ fi
 PROMPT="${1:?usage: dev/ask.sh [session-key] \"your prompt\"}"
 
 log "session '$KEY'"
-"$PY" -m omnigent_temporal submit "$KEY" "$PROMPT"
+exec "$PY" - "$KEY" "$PROMPT" <<'PY'
+import asyncio
+import sys
+import uuid
 
-log "waiting for the answer (Ctrl-C is safe; the turn keeps running)"
-exec "$PY" - "$KEY" <<'PY'
-import asyncio, sys
-from omnigent_temporal.client import session_state
+from omnigent_temporal.client import session_state, submit_prompt
 
-async def main(key: str) -> int:
-    for _ in range(360):
-        state = await session_state(key)
-        if state.finished:
-            print(f"\noutcome: {state.finished.outcome}")
+KEY, PROMPT = sys.argv[1], sys.argv[2]
+
+
+async def main() -> int:
+    prompt_id = str(uuid.uuid4())
+    await submit_prompt(KEY, PROMPT, prompt_id)
+    print(f"promptId {prompt_id}")
+    print("waiting for the answer (Ctrl-C is safe; the turn keeps running)")
+
+    for _ in range(900):
+        state = await session_state(KEY)
+        finished = state.finished
+        # Match the prompt: `finished` still holds the previous turn until this
+        # one lands, so waiting for "any finished turn" reports a stale answer.
+        if finished is not None and finished.prompt_id == prompt_id:
+            print(f"\noutcome: {finished.outcome}")
             print(f"session: {state.session_id}")
-            print(f"\n{state.finished.final_text}")
-            return 0 if state.finished.outcome == "answered" else 1
+            if finished.final_text:
+                print(f"\n{finished.final_text}")
+            else:
+                print("\n(no answer; check the worker log and the session's items)")
+            return 0 if finished.outcome == "answered" else 1
         await asyncio.sleep(2)
+
     print("no answer yet; check the worker log", file=sys.stderr)
     return 1
 
-raise SystemExit(asyncio.run(main(sys.argv[1])))
+
+raise SystemExit(asyncio.run(main()))
 PY

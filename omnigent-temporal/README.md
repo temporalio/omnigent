@@ -45,6 +45,8 @@ So the prompt carries a zero-width marker with its prompt id, and on a retry the
 
 The marker also tells our prompts apart from the context Omnigent injects as user-role messages of its own. Interestingly the codex-native path inside Omnigent dedupes the same way, by matching prompt text.
 
+An answer is not on its own the end of the turn. A parent that delegates reads answered the moment it speaks, and its own status reads idle once the work is with its children, so the executor holds the turn open while `subtree_busy` reports descendants still working, then takes whatever answer stands after they are quiet (a parent usually speaks again once its children report back). It is bounded by `OMNIGENT_SUBTREE_TIMEOUT_SECONDS` so one wedged child cannot hold a turn open forever, costs a single call when there are no sub-agents, and `OMNIGENT_AWAIT_SUBTREE=0` turns it off. It is point-in-time, so a child that has not spawned yet reads quiet: this closes the common case, not a race with a child being created.
+
 Waiting keys on the **item log**, not on `status`. A session reads `idle` in the gap between a prompt landing and the turn starting, and a parent reads `idle` while its sub-agents still work, so status alone would report a turn done that never ran. Status is used only to notice failure.
 
 ## What this fork adds
@@ -69,13 +71,15 @@ python -m omnigent_temporal state my-key
 python -m omnigent_temporal interrupt my-key
 ```
 
-Env: `TEMPORAL_ADDRESS`, `TEMPORAL_NAMESPACE`, `OMNIGENT_TEMPORAL_TASK_QUEUE`, `OMNIGENT_SERVER_URL`, `OMNIGENT_AGENT`, `OMNIGENT_WORKSPACE`, `OMNIGENT_IDLE_TIMEOUT_SECONDS`, `OMNIGENT_TURN_TIMEOUT_SECONDS`, `OMNIGENT_RECOVER_AFTER_SECONDS`.
+Env: `TEMPORAL_ADDRESS`, `TEMPORAL_NAMESPACE`, `OMNIGENT_TEMPORAL_TASK_QUEUE`, `OMNIGENT_SERVER_URL`, `OMNIGENT_AGENT`, `OMNIGENT_WORKSPACE`, `OMNIGENT_IDLE_TIMEOUT_SECONDS`, `OMNIGENT_TURN_TIMEOUT_SECONDS`, `OMNIGENT_RECOVER_AFTER_SECONDS`, `OMNIGENT_AWAIT_SUBTREE`, `OMNIGENT_SUBTREE_TIMEOUT_SECONDS`.
 
 `temporal workflow query --workflow-id omnigent-session-<key> --name sessionState` reports the queue, the session id, the turn in flight, and how the last turn ended.
 
 Note: the repo's `uv.toml` uses a duration syntax older uv builds cannot parse, so `UV_NO_CONFIG=1` may be needed for uv commands run from inside this directory.
 
 ## Checks
+
+`tests/` covers the sub-agent gate against a mock transport: an answer waits for a busy child and takes the later one, a quiet subtree costs one check, a wedged child does not hold the turn open forever, and opting out skips the walk. Run it with `python -m pytest tests`.
 
 `loop_check.py` runs the workflow against a real Temporal server with the turn activity stubbed, so it needs no Omnigent server and no model key: one activity per prompt, the session id carried into the second turn, an interrupt that reaches the server and still lets the session serve a later prompt.
 
@@ -99,5 +103,4 @@ Two crash tests, for the two things that can die.
 - **No step level, and not for the reason you would guess.** A turn is the smallest unit Omnigent can *drive*. It is not that the loop is expensive to split: Omnigent has no loop of its own to split. Every shipped executor reports `handles_tools_internally() == True`, so the model-call-then-tools loop always lives in the vendor SDK or the vendor CLI. Omnigent brokers turns; it never sits between "the model asked for a tool" and "the tool ran". A step is something it can observe, not something it can gate.
 
   Two things soften that. Step boundaries are already persisted per item, so this executor can checkpoint *on* steps without any fork. And a stepwise protocol does exist in the tree, orphaned: `TurnComplete(continue_turn=True)` plus `max_turns=1` and an in-memory resume state in the openai-agents executor, with zero consumers repo-wide. Reviving it would buy step gating for one harness, with the resume state still in process memory, so a crash between steps would fall back to full-history replay anyway.
-- **Sub-agents are not tracked.** A parent turn that delegates reads answered when the parent answers. `subtree_busy` exists and would be the way to gate on descendant work.
 - **No orphan tool-call repair to rely on.** Omnigent does not synthesize a placeholder tool output: native harnesses leave it to the vendor CLI's own resume, and the SDK path drops tool items when rebuilding the prompt.

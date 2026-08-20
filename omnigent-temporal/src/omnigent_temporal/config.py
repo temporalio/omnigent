@@ -28,6 +28,12 @@ class Config:
     # How long a turn may show no progress before we ask the server to bring its
     # runner back. A turn whose runner died is not re-driven by anything else.
     recover_after_seconds: int
+    # Whether an answer waits for the sub-agents it delegated to. A parent reads
+    # answered as soon as it speaks, which is too early when its children are
+    # still working.
+    await_subtree: bool
+    # Bound on that wait, so one wedged child cannot hold a turn open forever.
+    subtree_timeout_seconds: int
 
 
 def from_env() -> Config:
@@ -41,4 +47,6 @@ def from_env() -> Config:
         idle_timeout_seconds=int(os.environ.get("OMNIGENT_IDLE_TIMEOUT_SECONDS", "300")),
         turn_timeout_seconds=int(os.environ.get("OMNIGENT_TURN_TIMEOUT_SECONDS", "1800")),
         recover_after_seconds=int(os.environ.get("OMNIGENT_RECOVER_AFTER_SECONDS", "60")),
+        await_subtree=os.environ.get("OMNIGENT_AWAIT_SUBTREE", "1") != "0",
+        subtree_timeout_seconds=int(os.environ.get("OMNIGENT_SUBTREE_TIMEOUT_SECONDS", "600")),
     )

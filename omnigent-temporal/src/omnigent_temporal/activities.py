@@ -43,6 +43,18 @@ def _text_of(content: object) -> str:
     return "".join(parts)
 
 
+def beat(details: object) -> None:
+    """Heartbeat, tolerating being called outside an activity.
+
+    The polling helpers are exercised directly in tests, where there is no
+    activity context to report to.
+    """
+    try:
+        activity.heartbeat(details)
+    except RuntimeError:
+        pass
+
+
 class _PromptState:
     """What the item log says about one prompt."""
 
@@ -116,7 +128,7 @@ def make_activities(cfg: Config):
                 session_id = session.id
                 # Heartbeat the id the moment it exists, so a crash from here on
                 # resumes this session instead of opening a second one.
-                activity.heartbeat(session_id)
+                beat(session_id)
 
             state = await _prompt_state(client, session_id, marker)
             if state.answered:
@@ -181,11 +193,11 @@ async def _await_answer(
     seen_items = -1
 
     while waited < cfg.turn_timeout_seconds:
-        activity.heartbeat(session_id)
+        beat(session_id)
         items = await client.sessions.list_items(session_id, limit=1000, order="asc")
         state = _scan(items, marker)
         if state.answered:
-            return state.final_text
+            return await _settle_subtree(client, session_id, marker, cfg, state)
 
         # Any new item is progress, so only a genuinely stuck turn is recovered.
         if len(items) != seen_items:
@@ -223,3 +235,43 @@ async def _await_answer(
     raise TimeoutError(
         f"turn on {session_id} produced no answer in {cfg.turn_timeout_seconds}s"
     )
+
+
+async def _settle_subtree(
+    client: OmnigentClient,
+    session_id: str,
+    marker: str,
+    cfg: Config,
+    answered: _PromptState,
+) -> str:
+    """Hold the turn open while the sub-agents it delegated to are still working.
+
+    A parent reads answered the moment it speaks, and its own status reads idle
+    once it has delegated, so an answer is not on its own proof the work is
+    done. ``subtree_busy`` is the rollup that walks the descendants, and it is
+    what the CLI badge and the web panel use.
+
+    Point-in-time, so a child that has not spawned yet reads quiet: this closes
+    the common case, not a race with a child being created.
+    """
+    if not cfg.await_subtree:
+        return answered.final_text
+
+    waited = 0.0
+    while waited < cfg.subtree_timeout_seconds:
+        beat(session_id)
+        if not await client.sessions.subtree_busy(session_id):
+            break
+        await asyncio.sleep(_POLL_SECONDS)
+        waited += _POLL_SECONDS
+    else:
+        _logger.warning(
+            "sub-agents under %s were still busy after %ss; answering anyway",
+            session_id,
+            cfg.subtree_timeout_seconds,
+        )
+
+    # The parent often speaks again once its children report back, so the answer
+    # worth returning is the one that stands after they are quiet.
+    latest = await _prompt_state(client, session_id, marker)
+    return latest.final_text or answered.final_text
